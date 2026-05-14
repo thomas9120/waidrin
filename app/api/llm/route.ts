@@ -2,7 +2,7 @@ import type { NextRequest } from "next/server";
 import { NextResponse } from "next/server";
 
 const ALLOWED_SCHEMES = ["http:", "https:"];
-const BLOCKED_HOSTS = ["169.254.169.254", "metadata.google.internal", "localhost"];
+const BLOCKED_HOSTS = ["169.254.169.254", "metadata.google.internal"];
 
 function validateApiUrl(url: string): string | null {
   let parsed: URL;
@@ -56,6 +56,28 @@ interface LLMRequestBody {
   [key: string]: unknown;
 }
 
+function validateRequestBody(body: LLMRequestBody): string | null {
+  if (!body || typeof body !== "object") {
+    return "Request body must be an object";
+  }
+
+  if (!body.model || typeof body.model !== "string") {
+    return "Model is required";
+  }
+
+  if (!Array.isArray(body.messages)) {
+    return "Messages must be an array";
+  }
+
+  for (const msg of body.messages) {
+    if (!msg || typeof msg !== "object" || typeof msg.role !== "string" || typeof msg.content !== "string") {
+      return "Messages must contain role and content strings";
+    }
+  }
+
+  return null;
+}
+
 export async function POST(request: NextRequest) {
   const origin = request.headers.get("origin");
   const host = request.headers.get("host");
@@ -78,8 +100,9 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: urlError }, { status: 400 });
     }
 
-    if (!body.model || typeof body.model !== "string") {
-      return NextResponse.json({ error: "Model is required" }, { status: 400 });
+    const bodyError = validateRequestBody(body);
+    if (bodyError) {
+      return NextResponse.json({ error: bodyError }, { status: 400 });
     }
 
     for (const msg of body.messages) {

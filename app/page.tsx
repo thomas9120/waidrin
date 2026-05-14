@@ -57,8 +57,9 @@ export default function Home() {
 
   const [pendingPlugins, setPendingPlugins] = useState<Manifest[]>([]);
   const [pluginConfirmCallback, setPluginConfirmCallback] = useState<(() => void) | undefined>(undefined);
+  const [pluginCancelCallback, setPluginCancelCallback] = useState<(() => void) | undefined>(undefined);
 
-  const confirmPlugins = useCallback(async (manifests: Manifest[], stateRef: PluginWrapper[]) => {
+  const confirmPlugins = useCallback(async (manifests: Manifest[], stateRef: PluginWrapper[]): Promise<boolean> => {
     const untrusted: Manifest[] = [];
     for (const manifest of manifests) {
       if (!isValidPluginManifest(manifest)) continue;
@@ -69,15 +70,24 @@ export default function Home() {
     }
 
     if (untrusted.length > 0) {
-      return new Promise<void>((resolve) => {
+      return new Promise<boolean>((resolve) => {
         setPendingPlugins(untrusted);
         setPluginConfirmCallback(() => () => {
           setPendingPlugins([]);
           setPluginConfirmCallback(undefined);
-          resolve();
+          setPluginCancelCallback(undefined);
+          resolve(true);
+        });
+        setPluginCancelCallback(() => () => {
+          setPendingPlugins([]);
+          setPluginConfirmCallback(undefined);
+          setPluginCancelCallback(undefined);
+          resolve(false);
         });
       });
     }
+
+    return true;
   }, []);
 
   const loadPlugins = async () => {
@@ -94,7 +104,10 @@ export default function Home() {
 
         const validManifests = manifests.filter((m) => isValidPluginManifest(m));
 
-        await confirmPlugins(validManifests, state.plugins);
+        const shouldLoadPlugins = await confirmPlugins(validManifests, state.plugins);
+        if (!shouldLoadPlugins) {
+          return;
+        }
 
         state.backends = {};
 
@@ -247,12 +260,9 @@ export default function Home() {
 
       {pendingPlugins.length > 0 && pluginConfirmCallback && (
         <ErrorPopup
-          errorMessage={`The following new plugins were detected and will execute code in your browser:\n\n${pendingPlugins.map((p) => `• ${p.name}`).join("\n")}\n\nOnly proceed if you trust the source of these plugins.`}
+          errorMessage={`The following new plugins were detected and will execute code in your browser:\n\n${pendingPlugins.map((p) => `- ${p.name}`).join("\n")}\n\nOnly proceed if you trust the source of these plugins.`}
           onRetry={pluginConfirmCallback}
-          onCancel={() => {
-            setPendingPlugins([]);
-            setPluginConfirmCallback(undefined);
-          }}
+          onCancel={pluginCancelCallback}
         />
       )}
     </>
