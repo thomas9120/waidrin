@@ -3,6 +3,34 @@ import * as z from "zod/v4";
 import type { Prompt } from "./prompts";
 import { getState } from "./state";
 
+// JSON Schema keywords that llama.cpp's json-schema-to-grammar turns into large
+// repetition rule sets. With a big bound (e.g. maxLength: 2000) the generated
+// grammar exceeds llama.cpp's sane-repetition threshold and the server silently
+// falls back to *unconstrained* generation (llama.cpp issue #21228). These are
+// value-range constraints, not structural ones, and Zod still validates them on
+// the parsed result, so it is safe (and necessary) to drop them from the schema
+// used purely for grammar guidance.
+const GRAMMAR_UNFRIENDLY_KEYS = new Set(["minLength", "maxLength", "pattern"]);
+
+/**
+ * Returns a deep copy of a JSON Schema node with the constraint keywords removed
+ * that would make llama.cpp abandon grammar enforcement. Structural keywords
+ * (type, enum, properties, required, items, additionalProperties, const, ...) are
+ * preserved so the model is still forced into the correct shape.
+ */
+export function stripGrammarUnfriendlyConstraints(node: unknown): unknown {
+  if (Array.isArray(node)) return node.map(stripGrammarUnfriendlyConstraints);
+  if (node && typeof node === "object") {
+    const out: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(node as Record<string, unknown>)) {
+      if (GRAMMAR_UNFRIENDLY_KEYS.has(key)) continue;
+      out[key] = stripGrammarUnfriendlyConstraints(value);
+    }
+    return out;
+  }
+  return node;
+}
+
 export type TokenCallback = (token: string, count: number) => void;
 
 export interface Backend {
@@ -166,14 +194,37 @@ export class DefaultBackend implements Backend {
           json_schema: {
             name: "schema",
             strict: true,
-            schema: z.toJSONSchema(schema),
+            // Strip length/pattern constraints: large bounds make llama.cpp's
+            // grammar generator silently give up and run unconstrained (#21228).
+            // Structural shape (types, enums, required keys) is preserved, and the
+            // full schema is still validated against the response below.
+            schema: stripGrammarUnfriendlyConstraints(z.toJSONSchema(schema)),
           },
         },
       },
       onToken,
     );
 
-    return schema.parse(JSON.parse(response)) as Type;
+    // Some llama.cpp builds silently ignore `response_format` for object schemas
+    // and fall back to unconstrained generation (see llama.cpp issues #11988/#21228).
+    // That yields malformed/empty JSON here. Detect it explicitly and surface the
+    // actual response so the failure is diagnosable instead of a cryptic Zod error.
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(response);
+    } catch {
+      throw new Error(
+        `The model did not return valid JSON. The server may not be enforcing structured output. Got: "${previewResponse(response)}"`,
+      );
+    }
+
+    const result = schema.safeParse(parsed);
+    if (!result.success) {
+      throw new Error(
+        `The model's response did not match the expected schema. The server may not be enforcing structured output (JSON-schema constraints). Got: "${previewResponse(response)}"`,
+      );
+    }
+    return result.data as Type;
   }
 
   abort(): void {
@@ -183,6 +234,13 @@ export class DefaultBackend implements Backend {
   isAbortError(error: unknown): boolean {
     return error instanceof DOMException && error.name === "AbortError";
   }
+}
+
+// Truncate a model response for inclusion in error messages so a runaway
+// generation never produces a multi-megabyte error string.
+function previewResponse(response: string): string {
+  const trimmed = response.trim();
+  return trimmed.length > 300 ? `${trimmed.slice(0, 300)}…` : trimmed;
 }
 
 const defaultBackend = new DefaultBackend();
