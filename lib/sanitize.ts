@@ -22,7 +22,13 @@ export function sanitizeForDisplay(text: string): string {
 
 export function sanitizeErrorMessage(message: string): string {
   let sanitized = message.replace(/\/[^\s"']+/g, "[path]");
-  sanitized = sanitized.replace(/(?:api[_-]?key|token|secret|password|bearer)\s*[=:]\s*\S+/gi, "[redacted]");
+  // Redact credential-like patterns. The separator is optional so bare "bearer <token>"
+  // is caught, and an optional "bearer " prefix is consumed so the token following
+  // "Authorization: Bearer <token>" is redacted rather than leaked.
+  sanitized = sanitized.replace(
+    /(?:api[_-]?key|authorization|token|secret|password|bearer)\s*[:=]?\s*(?:bearer\s+)?\S+/gi,
+    "[redacted]",
+  );
   sanitized = sanitized.replace(/\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b/g, "[ip]");
   return sanitized.slice(0, 500);
 }

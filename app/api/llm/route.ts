@@ -1,49 +1,7 @@
 import type { NextRequest } from "next/server";
 import { NextResponse } from "next/server";
-
-const ALLOWED_SCHEMES = ["http:", "https:"];
-const BLOCKED_HOSTS = ["169.254.169.254", "metadata.google.internal"];
-
-function validateApiUrl(url: string): string | null {
-  let parsed: URL;
-  try {
-    parsed = new URL(url);
-  } catch {
-    return "Invalid URL format";
-  }
-
-  if (!ALLOWED_SCHEMES.includes(parsed.protocol)) {
-    return "Only HTTP and HTTPS URLs are allowed";
-  }
-
-  const hostname = parsed.hostname.toLowerCase();
-  for (const blocked of BLOCKED_HOSTS) {
-    if (hostname === blocked || hostname.endsWith(`.${blocked}`)) {
-      return `URL hostname "${hostname}" is not allowed`;
-    }
-  }
-
-  return null;
-}
-
-function sanitizeErrorMessage(message: string): string {
-  let sanitized = message.replace(/\/[^\s"']+/g, "[path]");
-  sanitized = sanitized.replace(/(?:api[_-]?key|token|secret|password|bearer)\s*[=:]\s*\S+/gi, "[redacted]");
-  sanitized = sanitized.replace(/\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b/g, "[ip]");
-  return sanitized.slice(0, 500);
-}
-
-function sanitizePromptText(text: string): string {
-  return text
-    .replace(/<\|[^|]*\|>/g, "")
-    .replace(/\[INST\]/gi, "")
-    .replace(/\[\/INST\]/gi, "")
-    .replace(/<s>/gi, "")
-    .replace(/<\/s>/gi, "")
-    .replace(/<<<[\s\S]*?>>>/g, "")
-    .replace(/```system[\s\S]*?```/gi, "")
-    .slice(0, 100000);
-}
+import { sanitizeErrorMessage, sanitizeForPrompt } from "@/lib/sanitize";
+import { validateApiUrl, validateRequestBody } from "@/lib/server/llmValidation";
 
 interface LLMRequestBody {
   apiUrl: string;
@@ -54,28 +12,6 @@ interface LLMRequestBody {
   max_tokens?: number;
   max_completion_tokens?: number;
   [key: string]: unknown;
-}
-
-function validateRequestBody(body: LLMRequestBody): string | null {
-  if (!body || typeof body !== "object") {
-    return "Request body must be an object";
-  }
-
-  if (!body.model || typeof body.model !== "string") {
-    return "Model is required";
-  }
-
-  if (!Array.isArray(body.messages)) {
-    return "Messages must be an array";
-  }
-
-  for (const msg of body.messages) {
-    if (!msg || typeof msg !== "object" || typeof msg.role !== "string" || typeof msg.content !== "string") {
-      return "Messages must contain role and content strings";
-    }
-  }
-
-  return null;
 }
 
 export async function POST(request: NextRequest) {
@@ -107,7 +43,7 @@ export async function POST(request: NextRequest) {
 
     for (const msg of body.messages) {
       if (msg.content) {
-        msg.content = sanitizePromptText(msg.content);
+        msg.content = sanitizeForPrompt(msg.content);
       }
     }
 
