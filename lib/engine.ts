@@ -167,9 +167,20 @@ export async function next(
         state.view = "connection";
       } else if (state.view === "connection") {
         step = ["Checking connection", "If this takes longer than a few seconds, there is probably something wrong"];
-        const testObject = await backend.getObject({ system: "test", user: "test" }, z.literal("waidrin"), onToken);
-        if (testObject !== "waidrin") {
-          throw new Error("Backend does not support schema constraints");
+        // Probe with an *object* schema (a required literal plus an enum), not just a
+        // scalar. Some servers constrain trivial values fine but silently drop complex
+        // object schemas (a known llama.cpp json_schema failure mode), which would
+        // otherwise surface as cryptic validation errors during world/character
+        // generation. Catching it here gives a clear, actionable message.
+        try {
+          await backend.getObject(
+            { system: "test", user: "test" },
+            z.object({ status: z.literal("ok"), kind: z.enum(["alpha", "beta", "gamma"]) }),
+            onToken,
+          );
+        } catch (error) {
+          const reason = error instanceof Error ? error.message : String(error);
+          throw new Error(`Backend does not support schema constraints (${reason})`);
         }
 
         state.view = "genre";
